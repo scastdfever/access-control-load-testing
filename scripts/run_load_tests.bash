@@ -53,7 +53,7 @@ main() {
 
     echo "Environment: $LT_AC_ENVIRONMENT | Service: $LT_AC_SERVICE"
 
-    mvn clean gatling:test \
+    mvn clean gatling:test -q -B \
         -Dgatling.simulationClass=com.feverup.CodesValidationSimulation \
         -Dproperties.file="access-control-load-testing.$LT_AC_SERVICE.$LT_AC_ENVIRONMENT.properties"
 }
