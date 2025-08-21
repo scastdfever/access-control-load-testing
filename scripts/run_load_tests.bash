@@ -3,6 +3,7 @@
 # Determine environment file based on environment selection
 LT_AC_ENVIRONMENT=$1
 LT_AC_SERVICE=$2
+TICKET_ID=$3
 
 # Colors for output
 RED='\033[0;31m'
@@ -65,6 +66,17 @@ select_service() {
     echo -e "${GREEN}Selected service: $LT_AC_SERVICE${NC}"
 }
 
+select_ticket_id() {
+    local ticket_id
+    read -rp "Enter ticket ID to validate codes from: " ticket_id
+    if [ -z "$ticket_id" ]; then
+        print_error "Ticket ID is required. Exiting."
+        exit 1
+    fi
+    TICKET_ID="$ticket_id"
+    echo -e "${GREEN}Selected ticket ID: $TICKET_ID${NC}"
+}
+
 load_env_file() {
     local env_file=".env.$LT_AC_ENVIRONMENT"
     if [ ! -f "$env_file" ]; then
@@ -77,20 +89,21 @@ load_env_file() {
 }
 
 show_usage() {
-    echo "Usage: $0 [environment] [service]"
+    echo "Usage: $0 [environment] [service] [ticket_id]"
     echo ""
     echo "Arguments:"
     echo "  environment    local or staging (default: local)"
     echo "  service       fever2 or access-control (default: fever2)"
+    echo "  ticket_id     mandatory - ticket ID to validate codes from"
     echo ""
     echo "Examples:"
-    echo "  $0 local fever2                    # Run local fever2 tests"
-    echo "  $0 local access-control            # Run local access-control tests"
-    echo "  $0 staging fever2                  # Run staging fever2 tests"
-    echo "  $0                                # Run with defaults (local + fever2)"
+    echo "  $0 local fever2 TICKET123              # Run local fever2 tests for TICKET123"
+    echo "  $0 local access-control TICKET456      # Run local access-control tests for TICKET456"
+    echo "  $0 staging fever2 TICKET789            # Run staging fever2 tests for TICKET789"
+    echo "  $0                                    # Run with defaults (local + fever2) and prompt for ticket_id"
     echo ""
     echo "Interactive mode:"
-    echo "  $0                                # Will prompt for environment and service"
+    echo "  $0                                    # Will prompt for environment, service, and ticket_id"
 }
 
 main() {
@@ -100,6 +113,7 @@ main() {
     print_info "Load Testing Configuration:"
     echo "  Environment: $LT_AC_ENVIRONMENT"
     echo "  Service: $LT_AC_SERVICE"
+    echo "  Ticket ID: $TICKET_ID"
     echo ""
 
     # Load environment variables
@@ -108,6 +122,7 @@ main() {
     # Export environment variables for the simulation
     export LT_AC_ENVIRONMENT
     export LT_AC_SERVICE
+    export TICKET_ID
 
     print_status "Starting Gatling simulation..."
     mvn clean gatling:test -q -B \
@@ -127,6 +142,10 @@ fi
 
 if [ -z "$LT_AC_SERVICE" ]; then
     select_service
+fi
+
+if [ -z "$TICKET_ID" ]; then
+    select_ticket_id
 fi
 
 main

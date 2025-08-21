@@ -56,6 +56,7 @@ object Config {
     val environment: EnvironmentName = EnvironmentName.fromString(getEnvironmentVariable("LT_AC_ENVIRONMENT"))
     val environmentData: EnvironmentData = EnvironmentData.fromEnvironment(environment)
     val service: ServiceName = ServiceName.fromString(getEnvironmentVariable("LT_AC_SERVICE"))
+    val ticketId: Int = getEnvironmentVariable("TICKET_ID").toInt()
 
     val baseUrl: String =
         when (environment to service) {
@@ -75,7 +76,7 @@ object Config {
     val vus: Int =
         when (environment) {
             EnvironmentName.LOCAL -> 10
-            EnvironmentName.STAGING -> 1
+            EnvironmentName.STAGING -> 6
         }
 }
 
@@ -116,7 +117,7 @@ class CodesValidationSimulation : Simulation() {
             .header(Headers.X_LOAD_TEST, "true")
             .userAgentHeader(Config.AGENT_HEADER)
 
-    private val allCodesData = Utils.getCodesDataFromCsv(14162721)
+    private val allCodesData = Utils.getCodesDataFromCsv(Config.ticketId)
 
     private val validateCodeScenario: ScenarioBuilder =
         scenario("Validate Partitioned Codes Per User")
@@ -170,6 +171,7 @@ class CodesValidationSimulation : Simulation() {
             "Properties loaded: " +
                 "Environment: ${Config.environment.value}, " +
                 "Service: ${Config.service.value}, " +
+                "Ticket ID: ${Config.ticketId}, " +
                 "Base URL: ${Config.baseUrl}, " +
                 "Virtual Users: ${Config.vus}, " +
                 "Endpoint: ${Config.endpoint}, " +
