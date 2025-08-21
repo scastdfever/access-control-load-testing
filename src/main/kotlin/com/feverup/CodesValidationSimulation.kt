@@ -6,9 +6,11 @@ import io.gatling.javaapi.core.Simulation
 import io.gatling.javaapi.http.HttpDsl.http
 import io.gatling.javaapi.http.HttpDsl.status
 import io.gatling.javaapi.http.HttpProtocolBuilder
+import io.netty.handler.codec.http.HttpHeaderNames
 import java.io.IOException
 import java.util.*
 import java.util.concurrent.TimeUnit
+import kotlin.jvm.java
 import kotlin.math.min
 
 enum class EnvironmentName(val value: String) {
@@ -23,11 +25,14 @@ enum class EnvironmentName(val value: String) {
     }
 }
 
+object Headers {
+    const val X_LOAD_TEST: String = "X-Load-Test"
+}
+
 object Config {
     private const val PARTNER_ID: Int = 198
     private val props = Properties()
     const val JSON_MIME_TYPE: String = "application/json"
-    const val AUTHORIZATION_HEADER: String = "Authorization"
     const val AGENT_HEADER: String = "Gatling/3.9.5 (Kotlin)"
 
     init {
@@ -68,9 +73,14 @@ class CodesValidationSimulation : Simulation() {
     private val httpProtocol: HttpProtocolBuilder =
         http
             .baseUrl(Config.baseUrl)
-            .acceptHeader(Config.JSON_MIME_TYPE)
-            .contentTypeHeader(Config.JSON_MIME_TYPE)
-            .header(Config.AUTHORIZATION_HEADER, Config.token)
+            .headers(
+                mapOf(
+                    HttpHeaderNames.ACCEPT to Config.JSON_MIME_TYPE,
+                    HttpHeaderNames.CONTENT_TYPE to Config.JSON_MIME_TYPE,
+                    HttpHeaderNames.AUTHORIZATION to Config.token,
+                    Headers.X_LOAD_TEST to "true"
+                )
+            )
             .userAgentHeader(Config.AGENT_HEADER)
 
     // 3. Data Preparation: Fetch all codes from the database once during initialization.
