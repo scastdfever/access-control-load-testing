@@ -51,8 +51,8 @@ object Config {
         when (environment to service) {
             EnvironmentName.LOCAL to ServiceName.ACCESS_CONTROL -> "http://localhost:8020"
             EnvironmentName.LOCAL to ServiceName.FEVER2 -> "http://localhost:8002"
-            EnvironmentName.STAGING to ServiceName.ACCESS_CONTROL -> "https://access-control.staging.feverup.com"
-            EnvironmentName.STAGING to ServiceName.FEVER2 -> "https://fever2.staging.feverup.com"
+            EnvironmentName.STAGING to ServiceName.ACCESS_CONTROL -> "https://services.staging.feverup.com/b2b-access-control"
+            EnvironmentName.STAGING to ServiceName.FEVER2 -> "https://staging.feverup.com"
             else -> throw IllegalArgumentException("Invalid environment-service combination: $environment-$service")
         }
 
