@@ -116,7 +116,7 @@ class CodesValidationSimulation : Simulation() {
                         .post(Config.endpoint)
                         .body(
                             StringBody(
-                                """{\"code\":\"#{codeMap.code}\",\"main_plan_ids\":[105544],\"connectivity_mode\":\"offline\"}"""
+                                """{"code":"#{codeMap.code}","main_plan_ids":[105544],"connectivity_mode":"offline"}"""
                             )
                         )
                         .check(
