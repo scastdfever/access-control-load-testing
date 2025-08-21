@@ -6,7 +6,6 @@ import io.gatling.javaapi.core.Simulation
 import io.gatling.javaapi.http.HttpDsl.http
 import io.gatling.javaapi.http.HttpDsl.status
 import io.gatling.javaapi.http.HttpProtocolBuilder
-import io.netty.handler.codec.http.HttpHeaderNames
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.math.min
@@ -76,35 +75,24 @@ fun getEnvironmentVariable(variable: String): String {
 }
 
 class CodesValidationSimulation : Simulation() {
-    // 1. HTTP Protocol Setup: Configure common HTTP settings for all requests.
     private val httpProtocol: HttpProtocolBuilder =
         http
             .baseUrl(Config.baseUrl)
-            .headers(
-                mapOf(
-                    HttpHeaderNames.ACCEPT to Config.JSON_MIME_TYPE,
-                    HttpHeaderNames.CONTENT_TYPE to Config.JSON_MIME_TYPE,
-                    HttpHeaderNames.AUTHORIZATION to Config.token,
-                    Headers.X_LOAD_TEST to "true"
-                )
-            )
+            .acceptHeader(Config.JSON_MIME_TYPE)
+            .contentTypeHeader(Config.JSON_MIME_TYPE)
+            .authorizationHeader(Config.token)
+            .header(Headers.X_LOAD_TEST, "true")
             .userAgentHeader(Config.AGENT_HEADER)
 
-    // 2. Data Preparation: Fetch all codes from the database once during initialization.
     private val allCodesData = prepareCodesData()
 
-    // 3. Scenario Definition: Describes the actions a virtual user will perform.
     private val validateCodeScenario: ScenarioBuilder =
         scenario("Validate Partitioned Codes Per User")
-            // This exec block runs for each user and calculates their unique chunk of data.
             .exec { session ->
-                // Gatling's userId is 1-based.
                 val userId = session.userId().toInt()
                 val chunkSize = allCodesData.size / Config.vus
                 val startIndex = (userId - 1) * chunkSize
 
-                // The last user takes the remaining chunk to handle cases where the data isn't
-                // perfectly divisible.
                 val endIndex =
                     if (userId == Config.vus) {
                         allCodesData.size
@@ -112,8 +100,6 @@ class CodesValidationSimulation : Simulation() {
                         startIndex + chunkSize
                     }
 
-                // Get the sublist for this specific user. Handle cases where there are more users than
-                // data.
                 val userChunk =
                     if (startIndex >= allCodesData.size) {
                         emptyList()
@@ -121,37 +107,24 @@ class CodesValidationSimulation : Simulation() {
                         allCodesData.subList(startIndex, min(endIndex, allCodesData.size))
                     }
 
-                // Set this user's unique chunk into a session attribute.
                 session.set("myCodeChunk", userChunk)
             }
-            // Use foreach to loop over the user's unique chunk of codes.
             .foreach("#{myCodeChunk}", "codeMap")
             .on(
                 exec(
-                    http("POST_validate_code_#{codeMap.code}") // Use the code in the request name
-                        // for uniqueness
+                    http("POST_validate_code_#{codeMap.code}")
                         .post(Config.endpoint)
                         .body(
                             StringBody(
-                                // Use Gatling's Expression Language to build the body from the
-                                // "codeMap" attribute.
-                                """
-                        {
-                          "code": "#{codeMap.code}",
-                          "main_plan_ids": [105544],
-                          "connectivity_mode": "offline"
-                        }
-                        """
-                                    .trimIndent()
+                                """{\"code\":\"#{codeMap.code}\",\"main_plan_ids\":[105544],\"connectivity_mode\":\"offline\"}"""
                             )
                         )
                         .check(
-                            status().`is`(200) // Check for a successful HTTP 200 OK response.
+                            status().`is`(200)
                         )
                 )
             )
 
-    // 4. Lifecycle Hooks: Optional hooks for logging or other actions.
     override fun before() {
         println("Gatling simulation is about to start.")
     }
@@ -160,7 +133,6 @@ class CodesValidationSimulation : Simulation() {
         println("Gatling simulation has finished.")
     }
 
-    // 5. Injection Profile & Assertions: Define the load and set success criteria.
     init {
         println(
             "Properties loaded: " +
@@ -174,7 +146,7 @@ class CodesValidationSimulation : Simulation() {
 
         setUp(
             validateCodeScenario.injectOpen(
-                atOnceUsers(Config.vus) // Inject all virtual users at the same time.
+                atOnceUsers(Config.vus)
             )
         )
             .protocols(httpProtocol)
@@ -183,42 +155,36 @@ class CodesValidationSimulation : Simulation() {
                 global()
                     .responseTime()
                     .max()
-                    .lt(1000), // Assert that the max response time is less than 1000 ms.
+                    .lt(1000),
                 global()
                     .failedRequests()
                     .count()
-                    .`is`(0L) // Assert that there are zero failed requests.
+                    .`is`(0L)
             )
     }
-
-    // --- Helper Functions ---
 
     private data class Code(val code: String)
 
     private data class ProcessResult(val exitCode: Int, val output: String)
 
-    /** Prepares the database and fetches codes, returning them as a List of Maps. */
     private fun prepareCodesData(limit: Int? = null): List<Map<String, Any>> {
         if (Config.environment == EnvironmentName.STAGING) {
-            return emptyList() // Skip preparation in staging environment.
+            return emptyList()
         }
 
         println("Preparing database and fetching codes for the test...")
 
-        // Step 1: Reset validation state in the database.
         val prepareSuccess = prepareCodesForValidation()
         if (!prepareSuccess) {
             throw IllegalStateException("Failed to prepare codes for validation. Aborting simulation.")
         }
 
-        // Step 2: Fetch codes from the database.
         val codes = fetchCodesFromDatabase(limit)
         if (codes.isEmpty()) {
             throw IllegalStateException("No codes fetched from the database. Aborting simulation.")
         }
         println("${codes.size} codes fetched for the test.")
 
-        // Step 3: Convert the list of codes to Gatling's feeder format (a List of Maps).
         return codes.map { mapOf("code" to it.code) }
     }
 
@@ -270,7 +236,6 @@ class CodesValidationSimulation : Simulation() {
         return try {
             val process = ProcessBuilder(*command).start()
             val output = process.inputStream.bufferedReader().readText()
-            // It's important to consume the error stream as well to prevent the process from hanging.
             process.errorStream.bufferedReader().readText()
             val exited = process.waitFor(10, TimeUnit.SECONDS)
             if (!exited) {
