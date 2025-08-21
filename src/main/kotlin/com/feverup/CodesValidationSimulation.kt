@@ -91,16 +91,16 @@ object Utils {
             ?: throw IllegalArgumentException("File resource '$fileName' not found.")
     }
 
-    fun getCodesDataFromCsv(): List<Map<String, Any>> {
+    fun getCodesDataFromCsv(ticketId: Int): List<Map<String, Any>> {
+        val ticketIdColumn = 3
         val csvContent = readFileResource("plancodes.csv")
         val map =
             csvContent.lines()
                 .drop(1) // Skip header
                 .filter { it.isNotBlank() }
-                .map {
-                    val cells = it.split(",")
-                    mapOf("code" to cells[0].trim())
-                }
+                .map { line -> line.split(",") }
+                .filter { cells -> cells[ticketIdColumn] == ticketId.toString() } // Filter by ticketId
+                .map { cells -> mapOf("code" to cells[0].trim()) }
 
         return map
     }
@@ -116,7 +116,7 @@ class CodesValidationSimulation : Simulation() {
             .header(Headers.X_LOAD_TEST, "true")
             .userAgentHeader(Config.AGENT_HEADER)
 
-    private val allCodesData = Utils.getCodesDataFromCsv()
+    private val allCodesData = Utils.getCodesDataFromCsv(14162721)
 
     private val validateCodeScenario: ScenarioBuilder =
         scenario("Validate Partitioned Codes Per User")
