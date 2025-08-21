@@ -8,9 +8,7 @@ import io.gatling.javaapi.http.HttpDsl.status
 import io.gatling.javaapi.http.HttpProtocolBuilder
 import io.netty.handler.codec.http.HttpHeaderNames
 import java.io.IOException
-import java.util.*
 import java.util.concurrent.TimeUnit
-import kotlin.jvm.java
 import kotlin.math.min
 
 enum class EnvironmentName(val value: String) {
@@ -25,39 +23,51 @@ enum class EnvironmentName(val value: String) {
     }
 }
 
+enum class ServiceName(val value: String) {
+    ACCESS_CONTROL("access-control"),
+    FEVER2("fever2");
+
+    companion object {
+        fun fromString(value: String): ServiceName {
+            return entries.find { it.value.equals(value, ignoreCase = true) }
+                ?: throw IllegalArgumentException("Unknown service: $value")
+        }
+    }
+}
+
 object Headers {
     const val X_LOAD_TEST: String = "X-Load-Test"
 }
 
 object Config {
-    private const val PARTNER_ID: Int = 198
-    private val props = Properties()
+    const val PARTNER_ID: Int = 198
     const val JSON_MIME_TYPE: String = "application/json"
     const val AGENT_HEADER: String = "Gatling/3.9.5 (Kotlin)"
 
-    init {
-        val configFile: String =
-            System.getProperty("properties.file")
-                ?: throw IllegalArgumentException("Missing system property: properties.file")
-        val inputStream =
-            Config::class.java.classLoader.getResourceAsStream(configFile)
-                ?: throw RuntimeException("Could not find config file: $configFile")
-        props.load(inputStream)
-        println("✅ Loaded config from: $configFile")
-    }
-
-    val baseUrl: String = getProperty(props, "host.url")
-    val vus: Int = getProperty(props, "test.vus").toInt()
-    val endpoint: String = getProperty(props, "test.endpoint").replace("{partnerId}", PARTNER_ID.toString())
     val token: String = "Token ${getEnvironmentVariable("USER_TOKEN")}"
     val environment: EnvironmentName = EnvironmentName.fromString(getEnvironmentVariable("LT_AC_ENVIRONMENT"))
-}
+    val service: ServiceName = ServiceName.fromString(getEnvironmentVariable("LT_AC_SERVICE"))
 
-fun getProperty(properties: Properties, property: String): String {
-    return when {
-        properties.containsKey(property) -> properties.getProperty(property)
-        else -> throw IllegalArgumentException("Property '$property' not found in properties.")
-    }
+    val baseUrl: String =
+        when (environment to service) {
+            EnvironmentName.LOCAL to ServiceName.ACCESS_CONTROL -> "http://localhost:8020"
+            EnvironmentName.LOCAL to ServiceName.FEVER2 -> "http://localhost:8002"
+            EnvironmentName.STAGING to ServiceName.ACCESS_CONTROL -> "https://access-control.staging.feverup.com"
+            EnvironmentName.STAGING to ServiceName.FEVER2 -> "https://fever2.staging.feverup.com"
+            else -> throw IllegalArgumentException("Invalid environment-service combination: $environment-$service")
+        }
+
+    val endpoint: String =
+        when (service) {
+            ServiceName.ACCESS_CONTROL -> "/api/1.1/partners/{partnerId}/codes/validate"
+            ServiceName.FEVER2 -> "/b2b/2.0/partners/{partnerId}/codes/validate/"
+        }.replace("{partnerId}", PARTNER_ID.toString())
+
+    val vus: Int =
+        when (environment) {
+            EnvironmentName.LOCAL -> 10
+            EnvironmentName.STAGING -> 20
+        }
 }
 
 fun getEnvironmentVariable(variable: String): String {
@@ -66,10 +76,7 @@ fun getEnvironmentVariable(variable: String): String {
 }
 
 class CodesValidationSimulation : Simulation() {
-    // 1. Configuration: Define constants and system properties for flexibility.
-    private val vus = Config.vus
-
-    // 2. HTTP Protocol Setup: Configure common HTTP settings for all requests.
+    // 1. HTTP Protocol Setup: Configure common HTTP settings for all requests.
     private val httpProtocol: HttpProtocolBuilder =
         http
             .baseUrl(Config.baseUrl)
@@ -83,23 +90,23 @@ class CodesValidationSimulation : Simulation() {
             )
             .userAgentHeader(Config.AGENT_HEADER)
 
-    // 3. Data Preparation: Fetch all codes from the database once during initialization.
+    // 2. Data Preparation: Fetch all codes from the database once during initialization.
     private val allCodesData = prepareCodesData()
 
-    // 4. Scenario Definition: Describes the actions a virtual user will perform.
+    // 3. Scenario Definition: Describes the actions a virtual user will perform.
     private val validateCodeScenario: ScenarioBuilder =
         scenario("Validate Partitioned Codes Per User")
             // This exec block runs for each user and calculates their unique chunk of data.
             .exec { session ->
                 // Gatling's userId is 1-based.
                 val userId = session.userId().toInt()
-                val chunkSize = allCodesData.size / vus
+                val chunkSize = allCodesData.size / Config.vus
                 val startIndex = (userId - 1) * chunkSize
 
                 // The last user takes the remaining chunk to handle cases where the data isn't
                 // perfectly divisible.
                 val endIndex =
-                    if (userId == vus) {
+                    if (userId == Config.vus) {
                         allCodesData.size
                     } else {
                         startIndex + chunkSize
@@ -144,7 +151,7 @@ class CodesValidationSimulation : Simulation() {
                 )
             )
 
-    // 5. Lifecycle Hooks: Optional hooks for logging or other actions.
+    // 4. Lifecycle Hooks: Optional hooks for logging or other actions.
     override fun before() {
         println("Gatling simulation is about to start.")
     }
@@ -153,23 +160,25 @@ class CodesValidationSimulation : Simulation() {
         println("Gatling simulation has finished.")
     }
 
-    // 6. Injection Profile & Assertions: Define the load and set success criteria.
+    // 5. Injection Profile & Assertions: Define the load and set success criteria.
     init {
         println(
             "Properties loaded: " +
                 "Environment: ${Config.environment.value}, " +
+                "Service: ${Config.service.value}, " +
                 "Base URL: ${Config.baseUrl}, " +
-                "Virtual Users: $vus, " +
+                "Virtual Users: $Config.vus, " +
                 "Endpoint: ${Config.endpoint}, " +
                 "Token: ${Config.token.take(4)}... (truncated for security)"
         )
 
         setUp(
             validateCodeScenario.injectOpen(
-                atOnceUsers(vus) // Inject all virtual users at the same time.
+                atOnceUsers(Config.vus) // Inject all virtual users at the same time.
             )
         )
             .protocols(httpProtocol)
+            .disablePauses()
             .assertions(
                 global()
                     .responseTime()
