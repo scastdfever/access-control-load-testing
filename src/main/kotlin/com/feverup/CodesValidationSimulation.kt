@@ -6,8 +6,6 @@ import io.gatling.javaapi.core.Simulation
 import io.gatling.javaapi.http.HttpDsl.http
 import io.gatling.javaapi.http.HttpDsl.status
 import io.gatling.javaapi.http.HttpProtocolBuilder
-import java.io.IOException
-import java.util.concurrent.TimeUnit
 import kotlin.math.min
 
 enum class EnvironmentName(val value: String) {
@@ -18,6 +16,18 @@ enum class EnvironmentName(val value: String) {
         fun fromString(value: String): EnvironmentName {
             return entries.find { it.value.equals(value, ignoreCase = true) }
                 ?: throw IllegalArgumentException("Unknown environment: $value")
+        }
+    }
+}
+
+enum class EnvironmentData(val environment: EnvironmentName, val partnerId: Int, val mainplanId: Int) {
+    LOCAL(EnvironmentName.LOCAL, 198, 105544),
+    STAGING(EnvironmentName.STAGING, 62, 278979);
+
+    companion object {
+        fun fromEnvironment(environment: EnvironmentName): EnvironmentData {
+            return entries.find { it.environment == environment }
+                ?: throw IllegalArgumentException("Unknown environment data for: $environment")
         }
     }
 }
@@ -39,19 +49,19 @@ object Headers {
 }
 
 object Config {
-    const val PARTNER_ID: Int = 198
     const val JSON_MIME_TYPE: String = "application/json"
     const val AGENT_HEADER: String = "Gatling/3.9.5 (Kotlin)"
 
     val token: String = "Token ${getEnvironmentVariable("USER_TOKEN")}"
     val environment: EnvironmentName = EnvironmentName.fromString(getEnvironmentVariable("LT_AC_ENVIRONMENT"))
+    val environmentData: EnvironmentData = EnvironmentData.fromEnvironment(environment)
     val service: ServiceName = ServiceName.fromString(getEnvironmentVariable("LT_AC_SERVICE"))
 
     val baseUrl: String =
         when (environment to service) {
             EnvironmentName.LOCAL to ServiceName.ACCESS_CONTROL -> "http://localhost:8020"
             EnvironmentName.LOCAL to ServiceName.FEVER2 -> "http://localhost:8002"
-            EnvironmentName.STAGING to ServiceName.ACCESS_CONTROL -> "https://services.staging.feverup.com/b2b-access-control"
+            EnvironmentName.STAGING to ServiceName.ACCESS_CONTROL -> "https://access-control-api.staging.feverup.com"
             EnvironmentName.STAGING to ServiceName.FEVER2 -> "https://staging.feverup.com"
             else -> throw IllegalArgumentException("Invalid environment-service combination: $environment-$service")
         }
@@ -60,18 +70,40 @@ object Config {
         when (service) {
             ServiceName.ACCESS_CONTROL -> "/api/1.1/partners/{partnerId}/codes/validate"
             ServiceName.FEVER2 -> "/b2b/2.0/partners/{partnerId}/codes/validate/"
-        }.replace("{partnerId}", PARTNER_ID.toString())
+        }.replace("{partnerId}", environmentData.partnerId.toString())
 
     val vus: Int =
         when (environment) {
             EnvironmentName.LOCAL -> 10
-            EnvironmentName.STAGING -> 20
+            EnvironmentName.STAGING -> 1
         }
 }
 
 fun getEnvironmentVariable(variable: String): String {
     return System.getenv(variable)
         ?: throw IllegalArgumentException("Environment variable '$variable' not found.")
+}
+
+object Utils {
+    fun readFileResource(fileName: String): String {
+        return Utils::class.java.classLoader.getResource(fileName)
+            ?.readText()
+            ?: throw IllegalArgumentException("File resource '$fileName' not found.")
+    }
+
+    fun getCodesDataFromCsv(): List<Map<String, Any>> {
+        val csvContent = readFileResource("plancodes.csv")
+        val map =
+            csvContent.lines()
+                .drop(1) // Skip header
+                .filter { it.isNotBlank() }
+                .map {
+                    val cells = it.split(",")
+                    mapOf("code" to cells[0].trim())
+                }
+
+        return map
+    }
 }
 
 class CodesValidationSimulation : Simulation() {
@@ -84,7 +116,7 @@ class CodesValidationSimulation : Simulation() {
             .header(Headers.X_LOAD_TEST, "true")
             .userAgentHeader(Config.AGENT_HEADER)
 
-    private val allCodesData = prepareCodesData()
+    private val allCodesData = Utils.getCodesDataFromCsv()
 
     private val validateCodeScenario: ScenarioBuilder =
         scenario("Validate Partitioned Codes Per User")
@@ -116,7 +148,7 @@ class CodesValidationSimulation : Simulation() {
                         .post(Config.endpoint)
                         .body(
                             StringBody(
-                                """{"code":"#{codeMap.code}","main_plan_ids":[105544],"connectivity_mode":"offline"}"""
+                                """{"code":"#{codeMap.code}","main_plan_ids":[${Config.environmentData.mainplanId}]}"""
                             )
                         )
                         .check(
@@ -139,7 +171,7 @@ class CodesValidationSimulation : Simulation() {
                 "Environment: ${Config.environment.value}, " +
                 "Service: ${Config.service.value}, " +
                 "Base URL: ${Config.baseUrl}, " +
-                "Virtual Users: $Config.vus, " +
+                "Virtual Users: ${Config.vus}, " +
                 "Endpoint: ${Config.endpoint}, " +
                 "Token: ${Config.token.take(4)}... (truncated for security)"
         )
@@ -161,95 +193,5 @@ class CodesValidationSimulation : Simulation() {
                     .count()
                     .`is`(0L)
             )
-    }
-
-    private data class Code(val code: String)
-
-    private data class ProcessResult(val exitCode: Int, val output: String)
-
-    private fun prepareCodesData(limit: Int? = null): List<Map<String, Any>> {
-        if (Config.environment == EnvironmentName.STAGING) {
-            return emptyList()
-        }
-
-        println("Preparing database and fetching codes for the test...")
-
-        val prepareSuccess = prepareCodesForValidation()
-        if (!prepareSuccess) {
-            throw IllegalStateException("Failed to prepare codes for validation. Aborting simulation.")
-        }
-
-        val codes = fetchCodesFromDatabase(limit)
-        if (codes.isEmpty()) {
-            throw IllegalStateException("No codes fetched from the database. Aborting simulation.")
-        }
-        println("${codes.size} codes fetched for the test.")
-
-        return codes.map { mapOf("code" to it.code) }
-    }
-
-    private fun fetchCodesFromDatabase(limit: Int? = null): List<Code> {
-        val limitMessage = limit?.toString() ?: "all"
-        println("Fetching $limitMessage codes from the database...")
-        val limitClause = limit?.let { "LIMIT $it" } ?: ""
-        val command =
-            arrayOf(
-                "docker",
-                "exec",
-                "fever2-postgres",
-                "psql",
-                "-U",
-                "fever_user",
-                "-d",
-                "fever",
-                "-c",
-                "COPY (SELECT code FROM core_plancodes WHERE main_plan_id = 105544 $limitClause) TO STDOUT;"
-            )
-        val result = executeCommand(command)
-        if (result.exitCode != 0) {
-            System.err.println("Failed to fetch codes. Exit code: ${result.exitCode}")
-            return emptyList()
-        }
-        return result.output.lines().mapNotNull { it.trim().takeIf { it.isNotEmpty() } }.map(::Code)
-    }
-
-    private fun prepareCodesForValidation(): Boolean {
-        println("Resetting code validation state in the database...")
-        val command =
-            arrayOf(
-                "docker",
-                "exec",
-                "fever2-postgres",
-                "psql",
-                "-U",
-                "fever_user",
-                "-d",
-                "fever",
-                "-c",
-                "UPDATE core_plancodes SET extra = 'is_validated => \"False\"' WHERE main_plan_id = 105544;"
-            )
-        val result = executeCommand(command)
-        return result.exitCode == 0
-    }
-
-    private fun executeCommand(command: Array<String>): ProcessResult {
-        return try {
-            val process = ProcessBuilder(*command).start()
-            val output = process.inputStream.bufferedReader().readText()
-            process.errorStream.bufferedReader().readText()
-            val exited = process.waitFor(10, TimeUnit.SECONDS)
-            if (!exited) {
-                process.destroyForcibly()
-                throw InterruptedException("Command timed out")
-            }
-            ProcessResult(process.exitValue(), output)
-        } catch (e: IOException) {
-            System.err.println("Error executing command: ${e.message}")
-            ProcessResult(-1, "")
-        } catch (e: InterruptedException) {
-            System.err.println("Command execution interrupted: ${e.message}")
-            Thread.currentThread().interrupt()
-            ProcessResult(-1, "")
-        }
     }
 }
