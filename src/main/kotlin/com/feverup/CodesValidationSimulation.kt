@@ -1,11 +1,22 @@
 package com.feverup
 
+import com.google.gson.Gson
+import com.google.gson.JsonArray
+import com.google.gson.JsonObject
 import io.gatling.javaapi.core.CoreDsl.*
 import io.gatling.javaapi.core.ScenarioBuilder
 import io.gatling.javaapi.core.Simulation
 import io.gatling.javaapi.http.HttpDsl.http
 import io.gatling.javaapi.http.HttpDsl.status
 import io.gatling.javaapi.http.HttpProtocolBuilder
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.slf4j.Logger
+import org.slf4j.LoggerFactory
+import java.util.*
 import kotlin.math.min
 
 enum class EnvironmentName(val value: String) {
@@ -20,9 +31,14 @@ enum class EnvironmentName(val value: String) {
     }
 }
 
-enum class EnvironmentData(val environment: EnvironmentName, val partnerId: Int, val mainplanId: Int) {
-    LOCAL(EnvironmentName.LOCAL, 198, 105544),
-    STAGING(EnvironmentName.STAGING, 62, 278979);
+enum class EnvironmentData(
+    val environment: EnvironmentName,
+    val partnerId: Int,
+    val mainplanId: Int,
+    val sessionId: Int
+) {
+    LOCAL(EnvironmentName.LOCAL, 198, 105544, 232948),
+    STAGING(EnvironmentName.STAGING, 62, 278979, 12552516);
 
     companion object {
         fun fromEnvironment(environment: EnvironmentName): EnvironmentData {
@@ -44,19 +60,18 @@ enum class ServiceName(val value: String) {
     }
 }
 
-object Headers {
+object Constants {
     const val X_LOAD_TEST: String = "X-Load-Test"
+    const val JSON_MIME_TYPE: String = "application/json"
+    const val AGENT_HEADER: String = "Gatling/3.14.3 (Kotlin)"
 }
 
 object Config {
-    const val JSON_MIME_TYPE: String = "application/json"
-    const val AGENT_HEADER: String = "Gatling/3.9.5 (Kotlin)"
-
-    val token: String = "Token ${getEnvironmentVariable("USER_TOKEN")}"
+    val fever2Token: String = "Bearer ${getEnvironmentVariable("FEVER2_TOKEN")}"
+    val b2bToken: String = "B2BToken ${getEnvironmentVariable("B2B_TOKEN")}"
     val environment: EnvironmentName = EnvironmentName.fromString(getEnvironmentVariable("LT_AC_ENVIRONMENT"))
     val environmentData: EnvironmentData = EnvironmentData.fromEnvironment(environment)
     val service: ServiceName = ServiceName.fromString(getEnvironmentVariable("LT_AC_SERVICE"))
-    val ticketId: Int = getEnvironmentVariable("TICKET_ID").toInt()
 
     val baseUrl: String =
         when (environment to service) {
@@ -85,39 +100,17 @@ fun getEnvironmentVariable(variable: String): String {
         ?: throw IllegalArgumentException("Environment variable '$variable' not found.")
 }
 
-object Utils {
-    fun readFileResource(fileName: String): String {
-        return Utils::class.java.classLoader.getResource(fileName)
-            ?.readText()
-            ?: throw IllegalArgumentException("File resource '$fileName' not found.")
-    }
-
-    fun getCodesDataFromCsv(ticketId: Int): List<Map<String, Any>> {
-        val ticketIdColumn = 3
-        val csvContent = readFileResource("plancodes.csv")
-        val map =
-            csvContent.lines()
-                .drop(1) // Skip header
-                .filter { it.isNotBlank() }
-                .map { line -> line.split(",") }
-                .filter { cells -> cells[ticketIdColumn] == ticketId.toString() } // Filter by ticketId
-                .map { cells -> mapOf("code" to cells[0].trim()) }
-
-        return map
-    }
-}
-
 class CodesValidationSimulation : Simulation() {
+    private val logger: Logger = LoggerFactory.getLogger(javaClass)
     private val httpProtocol: HttpProtocolBuilder =
-        http
-            .baseUrl(Config.baseUrl)
-            .acceptHeader(Config.JSON_MIME_TYPE)
-            .contentTypeHeader(Config.JSON_MIME_TYPE)
-            .authorizationHeader(Config.token)
-            .header(Headers.X_LOAD_TEST, "true")
-            .userAgentHeader(Config.AGENT_HEADER)
+        http.baseUrl(Config.baseUrl)
+            .acceptHeader(Constants.JSON_MIME_TYPE)
+            .contentTypeHeader(Constants.JSON_MIME_TYPE)
+            .authorizationHeader(Config.b2bToken)
+            .header(Constants.X_LOAD_TEST, "true")
+            .userAgentHeader(Constants.AGENT_HEADER)
 
-    private val allCodesData = Utils.getCodesDataFromCsv(Config.ticketId)
+    private lateinit var allCodesData: List<Map<String, String>>
 
     private val validateCodeScenario: ScenarioBuilder =
         scenario("Validate Partitioned Codes Per User")
@@ -159,23 +152,26 @@ class CodesValidationSimulation : Simulation() {
             )
 
     override fun before() {
-        println("Gatling simulation is about to start.")
+        logger.info("Gatling simulation is about to start.")
+
+        val preparer = CodesPreparer()
+        val orders = 5
+        val ticketsPerOrder = 10
+        val codes = preparer.prepareCodes(Config.environmentData.sessionId, orders, ticketsPerOrder)
+
+        allCodesData = codes.map { mapOf("code" to it) }
+
+        logger.info("Prepared {} codes for validation.", codes.size)
     }
 
     override fun after() {
-        println("Gatling simulation has finished.")
+        logger.info("Gatling simulation has finished.")
     }
 
     init {
-        println(
-            "Properties loaded: " +
-                "Environment: ${Config.environment.value}, " +
-                "Service: ${Config.service.value}, " +
-                "Ticket ID: ${Config.ticketId}, " +
-                "Base URL: ${Config.baseUrl}, " +
-                "Virtual Users: ${Config.vus}, " +
-                "Endpoint: ${Config.endpoint}, " +
-                "Token: ${Config.token.take(4)}... (truncated for security)"
+        logger.info(
+            "Properties loaded: Environment: {}, Service: {}, Base URL: {}, Virtual Users: {}, Endpoint: {}, ",
+            Config.environment.value, Config.service.value, Config.baseUrl, Config.vus, Config.endpoint
         )
 
         setUp(
@@ -195,5 +191,138 @@ class CodesValidationSimulation : Simulation() {
                     .count()
                     .`is`(0L)
             )
+    }
+}
+
+class CodesPreparer {
+    private val gson: Gson = Gson()
+    private val debug: Boolean = true
+    private val httpClient: OkHttpClient = if (debug) clientWithLogging() else OkHttpClient()
+    private val host: String = when (Config.environment) {
+        EnvironmentName.LOCAL -> "http://localhost:8002"
+        EnvironmentName.STAGING -> "https://staging.feverup.com"
+    }
+    private val logger: Logger = LoggerFactory.getLogger(javaClass)
+
+    private fun clientWithLogging(): OkHttpClient {
+        return OkHttpClient()
+            .newBuilder()
+            .addInterceptor { chain ->
+                val request = chain.request()
+                logger.info("Request: {}", request.url)
+                val response = chain.proceed(request)
+                logger.info("Response code: {}", response.code)
+
+                response
+            }
+            .build()
+    }
+
+    fun prepareCodes(sessionId: Int, orders: Int, tickets: Int): List<String> {
+        val codes = mutableListOf<String>()
+
+        (1..orders).forEach { order ->
+            val cartId = createCart(sessionId, tickets)
+            prepareBook(cartId)
+            val ticketId = bookCart(cartId)
+            codes.addAll(getCodesFromTicket(ticketId))
+            logger.info("Order {} created with ticket ID {} and {} codes.", order, ticketId, tickets)
+        }
+
+        return codes
+    }
+
+    fun createCart(sessionId: Int, ticketNumber: Int): UUID {
+        val requestBody = JsonObject().apply {
+            add("sessions", JsonArray().apply {
+                add(JsonObject().apply {
+                    addProperty("session_id", sessionId)
+                    addProperty("ticket_number", ticketNumber)
+                })
+            })
+        }.toString()
+
+        httpClient.newCall(
+            Request.Builder()
+                .url("$host/api/4.2/cart/")
+                .header("Authorization", Config.fever2Token)
+                .post(requestBody.toRequestBodyWithMediaType())
+                .build()
+        ).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw Exception("Unexpected status code $response")
+            }
+
+            val responseBody = response.body?.string() ?: throw Exception("Empty response body")
+            val jsonResponse = gson.fromJson(responseBody, JsonObject::class.java)
+
+            return UUID.fromString(jsonResponse.get("cart_id").asString)
+        }
+    }
+
+    fun prepareBook(cartId: UUID): UUID {
+        val requestBody = JsonObject().apply {
+            addProperty("cart_id", cartId.toString())
+        }.toString()
+
+        httpClient.newCall(
+            Request.Builder()
+                .url("$host/api/4.2/book/prepare/")
+                .header("Authorization", Config.fever2Token)
+                .post(requestBody.toRequestBodyWithMediaType())
+                .build()
+        ).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw Exception("Unexpected status code $response")
+            }
+
+            // No need to parse the body since the cart id is the same
+            return cartId
+        }
+    }
+
+    fun bookCart(cartId: UUID): Int {
+        httpClient.newCall(
+            Request.Builder()
+                .url("$host/api/4.2/cart/$cartId/book/free/")
+                .header("Authorization", Config.fever2Token)
+                .post("".toRequestBodyWithMediaType())
+                .build()
+        ).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw Exception("Unexpected status code $response")
+            }
+
+            val responseBody = response.body?.string() ?: throw Exception("Empty response body")
+            val jsonResponse = gson.fromJson(responseBody, JsonObject::class.java)
+
+            return jsonResponse.get("ticket_id").asInt
+        }
+    }
+
+    fun getCodesFromTicket(ticketId: Int): List<String> {
+        httpClient.newCall(
+            Request.Builder()
+                .url("$host/api/4.1/tickets/$ticketId/")
+                .header("Authorization", Config.fever2Token)
+                .get()
+                .build()
+        ).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw Exception("Unexpected status code $response")
+            }
+
+            val responseBody = response.body?.string() ?: throw Exception("Empty response body")
+            val jsonResponse = gson.fromJson(responseBody, JsonObject::class.java)
+            val codesJsonArray = jsonResponse.getAsJsonArray("codes")
+
+            return codesJsonArray.map { it.asJsonObject.get("code").asString }
+        }
+    }
+
+    companion object {
+        fun String.toRequestBodyWithMediaType(): RequestBody {
+            return toRequestBody("application/json".toMediaTypeOrNull())
+        }
     }
 }
