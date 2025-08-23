@@ -221,14 +221,13 @@ class CodesPreparer {
     fun prepareCodes(sessionId: Int, orders: Int, tickets: Int): List<String> {
         val codes = mutableListOf<String>()
 
-        (1..orders).forEach { order ->
-            val cartId = createCart(sessionId, tickets)
-            prepareBook(cartId)
-            val ticketId = bookCart(cartId)
-            codes.addAll(getCodesFromTicket(ticketId))
-            logger.info("Order {} created with ticket ID {} and {} codes.", order, ticketId, tickets)
-        }
+        (1..orders)
+            .map { createCart(sessionId, tickets) }
+            .map { prepareBook(it) }
+            .map { bookCart(it) }
+            .map { codes.addAll(getCodesFromTicket(it)) }
 
+        logger.info("Successfully prepared {} codes", codes.size)
         return codes
     }
 
