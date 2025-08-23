@@ -90,7 +90,7 @@ object Config {
 
     val vus: Int =
         when (environment) {
-            EnvironmentName.LOCAL -> 10
+            EnvironmentName.LOCAL -> 6
             EnvironmentName.STAGING -> 6
         }
 }
