@@ -155,8 +155,8 @@ class CodesValidationSimulation : Simulation() {
         logger.info("Gatling simulation is about to start.")
 
         val preparer = CodesPreparer()
-        val orders = 5
-        val ticketsPerOrder = 10
+        val orders = Config.vus * 10
+        val ticketsPerOrder = 100
         val codes = preparer.prepareCodes(Config.environmentData.sessionId, orders, ticketsPerOrder)
 
         allCodesData = codes.map { mapOf("code" to it) }
@@ -210,7 +210,12 @@ class CodesPreparer {
                 val request = chain.request()
                 logger.info("Request: {}", request.url)
                 val response = chain.proceed(request)
-                logger.info("Response code: {}", response.code)
+
+                if (response.isSuccessful) {
+                    logger.info("Response: {} {}", response.code, response.message)
+                } else {
+                    logger.error("Response: {} {}", response.code, response.message)
+                }
 
                 response
             }
