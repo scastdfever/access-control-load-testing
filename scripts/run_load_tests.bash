@@ -78,36 +78,36 @@ load_env_file() {
         if [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]]; then
             continue
         fi
-        
+
         # Remove leading/trailing whitespace
         line=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        
+
         # Check if line contains an equals sign
         if [[ "$line" == *"="* ]]; then
             # Extract variable name and value
             var_name="${line%%=*}"
             var_value="${line#*=}"
-            
+
             # Remove quotes if present
             var_value=$(echo "$var_value" | sed 's/^["'\'']//;s/["'\'']$//')
-            
+
             # Export the variable
             export "$var_name"="$var_value"
             print_status "Loaded: $var_name"
         fi
     done < "$env_file"
-    
+
     # Check if required tokens are set
     if [ -z "$FEVER2_TOKEN" ]; then
         print_error "FEVER2_TOKEN not found in $env_file. Exiting."
         exit 1
     fi
-    
+
     if [ -z "$B2B_TOKEN" ]; then
         print_error "B2B_TOKEN not found in $env_file. Exiting."
         exit 1
     fi
-    
+
     print_status "Loaded environment variables from $env_file"
 }
 
@@ -145,7 +145,7 @@ main() {
     export LT_AC_SERVICE
 
     print_status "Starting Gatling simulation..."
-    mvn clean gatling:test -q -B \
+    mvn gatling:test -q -B \
         -Dgatling.simulationClass=com.feverup.CodesValidationSimulation
 }
 
