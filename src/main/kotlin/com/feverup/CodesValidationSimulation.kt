@@ -160,7 +160,6 @@ class CodesValidationSimulation : Simulation() {
         val codes = preparer.prepareCodes(Config.environmentData.sessionId, orders, ticketsPerOrder)
 
         allCodesData = codes.map { mapOf("code" to it) }
-
         logger.info("Prepared {} codes for validation.", codes.size)
     }
 
