@@ -130,100 +130,6 @@ fun getEnvironmentVariable(variable: String): String {
         ?: throw IllegalArgumentException("Environment variable '$variable' not found.")
 }
 
-class CodesValidationSimulation : Simulation() {
-    private val logger: Logger = LoggerFactory.getLogger(javaClass)
-    private val httpProtocol: HttpProtocolBuilder =
-        http.baseUrl(Config.baseUrl)
-            .acceptHeader(Constants.JSON_MIME_TYPE)
-            .contentTypeHeader(Constants.JSON_MIME_TYPE)
-            .authorizationHeader(Config.b2bToken)
-            .header(Constants.X_LOAD_TEST, "true")
-            .userAgentHeader(Constants.AGENT_HEADER)
-
-    private lateinit var allCodesData: List<Map<String, String>>
-
-    private val validateCodeScenario: ScenarioBuilder =
-        scenario("Validate Partitioned Codes Per User")
-            .exec { session ->
-                val userId = session.userId().toInt()
-                val chunkSize = allCodesData.size / Config.vus
-                val startIndex = (userId - 1) * chunkSize
-
-                val endIndex =
-                    if (userId == Config.vus) {
-                        allCodesData.size
-                    } else {
-                        startIndex + chunkSize
-                    }
-
-                val userChunk =
-                    if (startIndex >= allCodesData.size) {
-                        emptyList()
-                    } else {
-                        allCodesData.subList(startIndex, min(endIndex, allCodesData.size))
-                    }
-
-                session.set("myCodeChunk", userChunk)
-            }
-            .foreach("#{myCodeChunk}", "codeMap")
-            .on(
-                exec(
-                    http("POST_validate_code_#{codeMap.code}")
-                        .post(Config.endpoint)
-                        .body(
-                            StringBody(
-                                """{"code":"#{codeMap.code}","main_plan_ids":[${Config.environmentData.mainplanId}]}"""
-                            )
-                        )
-                        .check(
-                            status().`is`(200)
-                        )
-                )
-            )
-
-    override fun before() {
-        logger.info("Gatling simulation is about to start.")
-
-        val preparer = CodesPreparer()
-        val orders = Config.vus * 10
-        val ticketsPerOrder = 100
-        val codes = preparer.prepareCodes(Config.environmentData.sessionId, orders, ticketsPerOrder)
-
-        allCodesData = codes.map { mapOf("code" to it) }
-        logger.info("Prepared {} codes for validation.", codes.size)
-    }
-
-    override fun after() {
-        logger.info("Gatling simulation has finished.")
-        logger.info("Request counts: {}", Requests.toString())
-    }
-
-    init {
-        logger.info(
-            "Properties loaded: Environment: {}, Service: {}, Base URL: {}, Virtual Users: {}, Endpoint: {}, ",
-            Config.environment.value, Config.service.value, Config.baseUrl, Config.vus, Config.endpoint
-        )
-
-        setUp(
-            validateCodeScenario.injectOpen(
-                atOnceUsers(Config.vus)
-            )
-        )
-            .protocols(httpProtocol)
-            .disablePauses()
-            .assertions(
-                global()
-                    .responseTime()
-                    .max()
-                    .lt(1000),
-                global()
-                    .failedRequests()
-                    .count()
-                    .`is`(0L)
-            )
-    }
-}
-
 class CodesPreparer {
     private val gson: Gson = Gson()
     private val debug: Boolean = true
@@ -367,5 +273,99 @@ class CodesPreparer {
         fun String.toRequestBodyWithMediaType(): RequestBody {
             return toRequestBody("application/json".toMediaTypeOrNull())
         }
+    }
+}
+
+class CodesValidationSimulation : Simulation() {
+    private val logger: Logger = LoggerFactory.getLogger(javaClass)
+    private val httpProtocol: HttpProtocolBuilder =
+        http.baseUrl(Config.baseUrl)
+            .acceptHeader(Constants.JSON_MIME_TYPE)
+            .contentTypeHeader(Constants.JSON_MIME_TYPE)
+            .authorizationHeader(Config.b2bToken)
+            .header(Constants.X_LOAD_TEST, "true")
+            .userAgentHeader(Constants.AGENT_HEADER)
+
+    private lateinit var allCodesData: List<Map<String, String>>
+
+    private val validateCodeScenario: ScenarioBuilder =
+        scenario("Validate Partitioned Codes Per User")
+            .exec { session ->
+                val userId = session.userId().toInt()
+                val chunkSize = allCodesData.size / Config.vus
+                val startIndex = (userId - 1) * chunkSize
+
+                val endIndex =
+                    if (userId == Config.vus) {
+                        allCodesData.size
+                    } else {
+                        startIndex + chunkSize
+                    }
+
+                val userChunk =
+                    if (startIndex >= allCodesData.size) {
+                        emptyList()
+                    } else {
+                        allCodesData.subList(startIndex, min(endIndex, allCodesData.size))
+                    }
+
+                session.set("myCodeChunk", userChunk)
+            }
+            .foreach("#{myCodeChunk}", "codeMap")
+            .on(
+                exec(
+                    http("POST_validate_code_#{codeMap.code}")
+                        .post(Config.endpoint)
+                        .body(
+                            StringBody(
+                                """{"code":"#{codeMap.code}","main_plan_ids":[${Config.environmentData.mainplanId}]}"""
+                            )
+                        )
+                        .check(
+                            status().`is`(200)
+                        )
+                )
+            )
+
+    override fun before() {
+        logger.info("Gatling simulation is about to start.")
+
+        val preparer = CodesPreparer()
+        val orders = Config.vus * 10
+        val ticketsPerOrder = 100
+        val codes = preparer.prepareCodes(Config.environmentData.sessionId, orders, ticketsPerOrder)
+
+        allCodesData = codes.map { mapOf("code" to it) }
+        logger.info("Prepared {} codes for validation.", codes.size)
+    }
+
+    override fun after() {
+        logger.info("Gatling simulation has finished.")
+        logger.info("Request counts: {}", Requests.toString())
+    }
+
+    init {
+        logger.info(
+            "Properties loaded: Environment: {}, Service: {}, Base URL: {}, Virtual Users: {}, Endpoint: {}, ",
+            Config.environment.value, Config.service.value, Config.baseUrl, Config.vus, Config.endpoint
+        )
+
+        setUp(
+            validateCodeScenario.injectOpen(
+                atOnceUsers(Config.vus)
+            )
+        )
+            .protocols(httpProtocol)
+            .disablePauses()
+            .assertions(
+                global()
+                    .responseTime()
+                    .max()
+                    .lt(1000),
+                global()
+                    .failedRequests()
+                    .count()
+                    .`is`(0L)
+            )
     }
 }
