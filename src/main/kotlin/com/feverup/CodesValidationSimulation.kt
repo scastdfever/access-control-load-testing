@@ -9,6 +9,7 @@ import io.gatling.javaapi.core.Simulation
 import io.gatling.javaapi.http.HttpDsl.http
 import io.gatling.javaapi.http.HttpDsl.status
 import io.gatling.javaapi.http.HttpProtocolBuilder
+import kotlin.math.min
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -16,8 +17,7 @@ import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
-import java.util.*
-import kotlin.math.min
+import java.util.UUID
 
 enum class EnvironmentName(val value: String) {
     LOCAL("local"),
@@ -95,6 +95,36 @@ object Config {
         }
 }
 
+object Requests {
+    const val VALIDATE_CODE = "VALIDATE_CODE"
+    const val CREATE_CART = "CREATE_CART"
+    const val PREPARE_BOOK = "PREPARE_BOOK"
+    const val BOOK_CART = "BOOK_CART"
+    const val GET_TICKET = "GET_TICKET"
+    const val TOTAL = "TOTAL"
+
+    private val requestCounts: MutableMap<String, Int> = mutableMapOf()
+
+    private fun incrementRequestCount(requestType: String, value: Int = 1) {
+        requestCounts.merge(requestType, value, Int::plus)
+        requestCounts.merge(TOTAL, value, Int::plus)
+    }
+
+    override fun toString(): String {
+        return requestCounts.entries.joinToString(", ") { "${it.key}: ${it.value}" }
+    }
+
+    fun validation(numberOfCodes: Int) = incrementRequestCount(VALIDATE_CODE, numberOfCodes)
+
+    fun createCart() = incrementRequestCount(CREATE_CART)
+
+    fun prepareBook() = incrementRequestCount(PREPARE_BOOK)
+
+    fun bookCart() = incrementRequestCount(BOOK_CART)
+
+    fun getTicket() = incrementRequestCount(GET_TICKET)
+}
+
 fun getEnvironmentVariable(variable: String): String {
     return System.getenv(variable)
         ?: throw IllegalArgumentException("Environment variable '$variable' not found.")
@@ -165,6 +195,7 @@ class CodesValidationSimulation : Simulation() {
 
     override fun after() {
         logger.info("Gatling simulation has finished.")
+        logger.info("Request counts: {}", Requests.toString())
     }
 
     init {
@@ -231,6 +262,7 @@ class CodesPreparer {
             .map { bookCart(it) }
             .map { codes.addAll(getCodesFromTicket(it)) }
 
+        Requests.validation(codes.size)
         logger.info("Successfully prepared {} codes", codes.size)
         return codes
     }
@@ -251,16 +283,18 @@ class CodesPreparer {
                 .header("Authorization", Config.fever2Token)
                 .post(requestBody.toRequestBodyWithMediaType())
                 .build()
-        ).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw Exception("Unexpected status code $response")
+        ).execute()
+            .apply { Requests.createCart() }
+            .use { response ->
+                if (!response.isSuccessful) {
+                    throw Exception("Unexpected status code $response")
+                }
+
+                val responseBody = response.body?.string() ?: throw Exception("Empty response body")
+                val jsonResponse = gson.fromJson(responseBody, JsonObject::class.java)
+
+                return UUID.fromString(jsonResponse.get("cart_id").asString)
             }
-
-            val responseBody = response.body?.string() ?: throw Exception("Empty response body")
-            val jsonResponse = gson.fromJson(responseBody, JsonObject::class.java)
-
-            return UUID.fromString(jsonResponse.get("cart_id").asString)
-        }
     }
 
     fun prepareBook(cartId: UUID): UUID {
@@ -274,14 +308,16 @@ class CodesPreparer {
                 .header("Authorization", Config.fever2Token)
                 .post(requestBody.toRequestBodyWithMediaType())
                 .build()
-        ).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw Exception("Unexpected status code $response")
-            }
+        ).execute()
+            .apply { Requests.prepareBook() }
+            .use { response ->
+                if (!response.isSuccessful) {
+                    throw Exception("Unexpected status code $response")
+                }
 
-            // No need to parse the body since the cart id is the same
-            return cartId
-        }
+                // No need to parse the body since the cart id is the same
+                return cartId
+            }
     }
 
     fun bookCart(cartId: UUID): Int {
@@ -291,16 +327,18 @@ class CodesPreparer {
                 .header("Authorization", Config.fever2Token)
                 .post("".toRequestBodyWithMediaType())
                 .build()
-        ).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw Exception("Unexpected status code $response")
+        ).execute()
+            .apply { Requests.bookCart() }
+            .use { response ->
+                if (!response.isSuccessful) {
+                    throw Exception("Unexpected status code $response")
+                }
+
+                val responseBody = response.body?.string() ?: throw Exception("Empty response body")
+                val jsonResponse = gson.fromJson(responseBody, JsonObject::class.java)
+
+                return jsonResponse.get("ticket_id").asInt
             }
-
-            val responseBody = response.body?.string() ?: throw Exception("Empty response body")
-            val jsonResponse = gson.fromJson(responseBody, JsonObject::class.java)
-
-            return jsonResponse.get("ticket_id").asInt
-        }
     }
 
     fun getCodesFromTicket(ticketId: Int): List<String> {
@@ -310,17 +348,19 @@ class CodesPreparer {
                 .header("Authorization", Config.fever2Token)
                 .get()
                 .build()
-        ).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw Exception("Unexpected status code $response")
+        ).execute()
+            .apply { Requests.getTicket() }
+            .use { response ->
+                if (!response.isSuccessful) {
+                    throw Exception("Unexpected status code $response")
+                }
+
+                val responseBody = response.body?.string() ?: throw Exception("Empty response body")
+                val jsonResponse = gson.fromJson(responseBody, JsonObject::class.java)
+                val codesJsonArray = jsonResponse.getAsJsonArray("codes")
+
+                return codesJsonArray.map { it.asJsonObject.get("code").asString }
             }
-
-            val responseBody = response.body?.string() ?: throw Exception("Empty response body")
-            val jsonResponse = gson.fromJson(responseBody, JsonObject::class.java)
-            val codesJsonArray = jsonResponse.getAsJsonArray("codes")
-
-            return codesJsonArray.map { it.asJsonObject.get("code").asString }
-        }
     }
 
     companion object {
